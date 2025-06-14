@@ -4,14 +4,12 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Optional, List
 from datetime import datetime
-
 from dotenv import load_dotenv
 from livekit.agents import JobContext, WorkerOptions, cli
 from livekit.agents.llm import function_tool
 from livekit.agents.voice import Agent, AgentSession, RunContext
 from livekit.plugins import deepgram, groq, silero,google,elevenlabs
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
-
 import re
 import smtplib
 from email.message import EmailMessage
@@ -160,7 +158,6 @@ def init_db():
         "INSERT OR IGNORE INTO medicines (name, description, side_effects) VALUES (?, ?, ?)",
         medicines_data
     )
-
     conn.commit()
     conn.close()
 
@@ -279,7 +276,7 @@ class UserData:
     phone: Optional[str] = None
     email: Optional[str] = None
     patient_id: Optional[int] = None
-    current_booking: Optional[dict] = None
+    current_booking: Optional[dict] = None 
     insurance_provider: Optional[str] = None
     insurance_number: Optional[str] = None
 
@@ -402,3 +399,343 @@ class TriageAgent(Agent):
             return f"Thank you, {name}. I've registered your details."
         except sqlite3.IntegrityError:
             return "This phone number or email is already registered. Please provide unique details."
+    
+    @function_tool
+    async def assess_injury(self, symptoms: str) -> str:
+        """Assess physical injury symptoms and suggest a specialty."""
+        symptom_map = {
+            "pain in arm": "Orthopedics",
+            "leg pain": "Orthopedics",
+            "back pain": "Orthopedics",
+            "sports injury": "Orthopedics",
+            "fracture": "Orthopedics",
+            "chest pain": "Cardiology",
+            "heart": "Cardiology",
+            "headache": "Neurology",
+            "seizure": "Neurology",
+            "fever": "General Medicine",
+            "cough": "General Medicine",
+            "fall": "Orthopedics",
+            "accident": "Orthopedics"
+        }
+        specialty = None
+        for symptom, spec in symptom_map.items():
+            if symptom.lower() in symptoms.lower():
+                specialty = spec
+                break
+        if not specialty:
+            specialty = "General Medicine"
+
+        conn = sqlite3.connect("hospital.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM doctors WHERE specialty = ? LIMIT 10", (specialty,))
+        doctors = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        doctor_list = ", ".join(doctors) if doctors else "No doctors available."
+        return (
+            f"Based on your symptoms ('{symptoms}'), I recommend seeing a {specialty} specialist. "
+            f"Available doctors: {doctor_list}. Would you like to book an appointment?"
+        )
+
+    @function_tool
+    async def assess_mental_health(self, symptoms: str) -> str:
+        """Assess mental health symptoms and suggest a specialty."""
+        if any(keyword in symptoms.lower() for keyword in ["anxiety", "depression", "stress", "mood", "sleep"]):
+            specialty = "Psychiatry"
+        else:
+            specialty = "General Medicine"
+
+        conn = sqlite3.connect("hospital.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM doctors WHERE specialty = ? LIMIT 10", (specialty,))
+        doctors = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        doctor_list = ", ".join(doctors) if doctors else "No doctors available."
+        return (
+            f"Based on your symptoms ('{symptoms}'), I recommend seeing a {specialty} specialist. "
+            f"Available doctors: {doctor_list}. Would you like to book an appointment?"
+        )
+
+    @function_tool
+    async def book_appointment(self, specialty: str, preferred_date: str, preferred_time: str, insurance_provider: Optional[str] = None, insurance_number: Optional[str] = None) -> str:
+        """Book an appointment for a patient with a specific specialty."""
+        userdata: UserData = self.session.userdata
+        if not userdata.is_identified():
+            return "Please identify yourself first using name, phone, and email."
+
+        try:
+            datetime.strptime(preferred_date, "%Y-%m-%d")
+            datetime.strptime(preferred_time, "%H:%M")
+        except ValueError:
+            return "Please provide date in YYYY-MM-DD format and time in HH:MM format."
+
+        conn = sqlite3.connect("hospital.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name FROM doctors WHERE specialty = ? LIMIT 1", (specialty,))
+        doctor = cursor.fetchone()
+        if not doctor:
+            conn.close()
+            return f"Specialty '{specialty}' is not available. Please choose another specialty."
+
+        doctor_id, doctor_name = doctor
+
+        # Update insurance details if provided
+        if insurance_provider and insurance_number:
+            cursor.execute(
+                "UPDATE patients SET insurance_provider = ?, insurance_number = ? WHERE id = ?",
+                (insurance_provider, insurance_number, userdata.patient_id)
+            )
+            conn.commit()
+            userdata.insurance_provider = insurance_provider
+            userdata.insurance_number = insurance_number
+
+        try:
+            cursor.execute(
+                "INSERT INTO appointments (patient_id, doctor_id, specialty, preferred_date, preferred_time) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (userdata.patient_id, doctor_id, specialty, preferred_date, preferred_time)
+            )
+            conn.commit()
+            booking_id = cursor.lastrowid
+        except sqlite3.Error as e:
+            conn.close()
+            return f"Failed to book appointment: {str(e)}"
+
+        conn.close()
+
+        email_sent = await self._send_confirmation_email(userdata.email, booking_id, specialty, preferred_date, preferred_time)
+        userdata.current_booking = None
+
+        if email_sent:
+            return (
+                f"Great! Your appointment (#{booking_id}) has been confirmed for {preferred_date} at {preferred_time} "
+                f"with {doctor_name} ({specialty}). You'll receive a confirmation email."
+            )
+        return (
+            f"Great! Your appointment (#{booking_id}) has been confirmed for {preferred_date} at {preferred_time} "
+            f"with {doctor_name} ({specialty}). However, there was an issue sending the confirmation email. "
+            f"Please check your email later or contact us if you don’t receive it."
+        )
+
+    @function_tool
+    async def view_appointments(self, phone: str) -> str:
+        """View upcoming appointments for a patient by phone number."""
+        conn = sqlite3.connect("hospital.db")
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT a.id, d.name, a.specialty, a.preferred_date, a.preferred_time 
+            FROM appointments a 
+            JOIN patients p ON a.patient_id = p.id 
+            JOIN doctors d ON a.doctor_id = d.id 
+            WHERE p.phone = ?
+            """,
+            (phone,)
+        )
+        bookings = cursor.fetchall()
+        conn.close()
+
+        if not bookings:
+            return "You have no upcoming appointments."
+        appointment_list = "\n".join([
+            f"- Appointment #{b[0]} with {b[1]} ({b[2]}) on {b[3]} at {b[4]}" for b in bookings
+        ])
+        return f"You have the following upcoming appointments:\n{appointment_list}"
+
+    @function_tool
+    async def update_appointment(self, booking_id: int, new_date: Optional[str] = None, new_time: Optional[str] = None, new_specialty: Optional[str] = None) -> str:
+        """Update an existing appointment by booking ID."""
+        conn = sqlite3.connect("hospital.db")
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT patient_id, doctor_id, specialty, preferred_date, preferred_time FROM appointments WHERE id = ?",
+            (booking_id,)
+        )
+        booking = cursor.fetchone()
+        if not booking:
+            conn.close()
+            return "Appointment not found. Please check the booking ID."
+
+        patient_id, current_doctor_id, current_specialty, current_date, current_time = booking
+        new_specialty = new_specialty or current_specialty
+        new_date = new_date or current_date
+        new_time = new_time or current_time
+
+        cursor.execute("SELECT id FROM doctors WHERE specialty = ? LIMIT 1", (new_specialty,))
+        doctor = cursor.fetchone()
+        if not doctor:
+            conn.close()
+            return f"Specialty '{new_specialty}' is not available. Please choose another specialty."
+
+        new_doctor_id = doctor[0]
+
+        try:
+            datetime.strptime(new_date, "%Y-%m-%d")
+            datetime.strptime(new_time, "%H:%M")
+        except ValueError:
+            conn.close()
+            return "Please provide date in YYYY-MM-DD format and time in HH:MM format."
+
+        cursor.execute(
+            "UPDATE appointments SET doctor_id = ?, specialty = ?, preferred_date = ?, preferred_time = ? WHERE id = ?",
+            (new_doctor_id, new_specialty, new_date, new_time, booking_id)
+        )
+        conn.commit()
+        conn.close()
+        return "Appointment updated successfully."
+
+    @function_tool
+    async def cancel_appointment(self, booking_id: int) -> str:
+        """Cancel an appointment by booking ID."""
+        conn = sqlite3.connect("hospital.db")
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM appointments WHERE id = ?", (booking_id,))
+        if cursor.rowcount == 0:
+            conn.close()
+            return "Appointment not found. Please check the booking ID."
+        conn.commit()
+        conn.close()
+        return "Appointment canceled successfully."
+
+    @function_tool
+    async def check_insurance(self, phone: str) -> str:
+        """Check if a patient has health insurance by phone number."""
+        conn = sqlite3.connect("hospital.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, insurance_provider, insurance_number FROM patients WHERE phone = ?", (phone,))
+        patient = cursor.fetchone()
+        conn.close()
+        if not patient:
+            return "No patient found with this phone number."
+        patient_id, insurance_provider, insurance_number = patient
+        if insurance_provider and insurance_number:
+            return f"Insurance found: Provider={insurance_provider}, Policy Number={insurance_number}."
+        return "No insurance details found for this patient."
+
+    @function_tool
+    async def submit_insurance_claim(self, phone: str, claim_amount: float) -> str:
+        """Submit an insurance claim for a patient."""
+        conn = sqlite3.connect("hospital.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, insurance_provider, insurance_number FROM patients WHERE phone = ?", (phone,))
+        patient = cursor.fetchone()
+        if not patient:
+            conn.close()
+            return "No patient found with this phone number."
+
+        patient_id, insurance_provider, insurance_number = patient
+        if not insurance_provider or not insurance_number:
+            conn.close()
+            return "No insurance details found. Please provide insurance information first."
+
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        cursor.execute(
+            "INSERT INTO insurance_claims (patient_id, insurance_provider, insurance_number, claim_amount, status, claim_date) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (patient_id, insurance_provider, insurance_number, claim_amount, "Pending", current_date)
+        )
+        conn.commit()
+        claim_id = cursor.lastrowid
+        conn.close()
+        return f"Insurance claim #{claim_id} submitted for {claim_amount} INR. Status: Pending."
+
+    @function_tool
+    async def get_medicine_info(self, name: str) -> str:
+        """Get information about a specific medicine."""
+        conn = sqlite3.connect("hospital.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, description, side_effects FROM medicines WHERE name = ?", (name,))
+        medicine = cursor.fetchone()
+        conn.close()
+
+        if not medicine:
+            return f"No information found for medicine: {name}"
+        return (
+            f"Medicine: {medicine[0]}\n"
+            f"Description: {medicine[1]}\n"
+            f"Side Effects: {medicine[2]}"
+        )
+
+    async def _send_confirmation_email(self, patient_email: str, booking_id: int, specialty: str, preferred_date: str, preferred_time: str) -> bool:
+        """Send a confirmation email for the appointment."""
+        try:
+            email_sender = os.getenv("EMAIL_SENDER")
+            email_password = os.getenv("EMAIL_PASSWORD")
+            if not email_sender or not email_password:
+                logger.error("Email credentials are missing in the environment variables.")
+                return False
+
+            msg = EmailMessage()
+            msg['Subject'] = "Appointment Confirmation"
+            msg['From'] = email_sender
+            msg['To'] = patient_email
+            msg.set_content(
+                f"Hello {self.session.userdata.name}, your appointment (#{booking_id}) is scheduled for "
+                f"{preferred_date} at {preferred_time} with a {specialty} specialist."
+            )
+
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(email_sender, email_password)
+                server.send_message(msg)
+
+            logger.info(f"Confirmation email sent to {patient_email}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send email to {patient_email}: {e}")
+            return False
+
+
+async def entrypoint(ctx: JobContext):
+    logger.info(f"Attempting to connect to LiveKit server at {os.getenv('LIVEKIT_URL')}")
+    try:
+        await ctx.connect()
+    except Exception as e:
+        logger.error(f"Failed to connect to LiveKit server: {e}")
+        raise
+
+    # Wait for a participant to join
+    while len(ctx.room.remote_participants) < 1:
+        await asyncio.sleep(0.1)
+
+    user_participant = next(iter(ctx.room.remote_participants.values()))
+    language = user_participant.metadata or "en"
+
+    logger.info(f"Job {ctx.job.id} received for language: {language}")
+
+    # Initialize user data with context and language
+    userdata = UserData(ctx=ctx, language=language)
+
+    # Create triage agent
+    triage_agent = TriageAgent(language=language)
+
+    # Create session with userdata
+    session = AgentSession[UserData](userdata=userdata)
+
+    # Start the session with the triage agent
+    try:
+        await session.start(
+            agent=triage_agent,
+            room=ctx.room,
+        )
+    except Exception as e:
+        logger.error(f"Failed to start agent session: {e}")
+        raise
+
+    # Placeholder for metrics collection
+    async def log_usage():
+        logger.info(f"Job {ctx.job.id}: Metrics collection placeholder")
+
+    ctx.add_shutdown_callback(log_usage)
+    logger.info(f"Job {ctx.job.id}: Shutdown callback added")
+
+    # Wait for the session to finish
+    await session.wait()
+    
+if __name__ == "__main__":
+    init_db()
+    Worker_options = WorkerOptions(
+        entrypoint_fnc = entrypoint,
+    )
+    cli.run_worker(Worker_options)
