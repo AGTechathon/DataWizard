@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-ULTRAVOX_API_KEY = ""
+ULTRAVOX_API_KEY = "7Gbaa4qr.4MMlwkK2OdOJNbqiPTV2pCMPXVhhxSQ9"
 ULTRAVOX_API_URL = 'https://api.ultravox.ai/api/calls'
 
 # Load the prompt template from file at startup
@@ -30,7 +30,7 @@ ULTRAVOX_CALL_CONFIG = {
 def create_ultravox_call(config):
     headers = {
         'Content-Type': 'application/json',
-        'X-API-Key': ""
+        'X-API-Key': ULTRAVOX_API_KEY
     }
     response = requests.post(ULTRAVOX_API_URL, json=config, headers=headers)
     response.raise_for_status()
