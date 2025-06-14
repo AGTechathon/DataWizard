@@ -296,7 +296,7 @@ class TriageAgent(Agent):
     def __init__(self, language: str = "en") -> None:
         super().__init__(
             instructions=PROMPTS.get(language, PROMPTS["en"]),
-            llm=groq.LLM(model="gemma2-9b-it", api_key="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"),
+            llm=groq.LLM(model="gemma2-9b-it", api_key=""),
             tts=self._get_tts(language),
             stt=self._get_stt(language),
             vad=silero.VAD.load(),
@@ -313,7 +313,7 @@ class TriageAgent(Agent):
                 voice_id="eyVoIoi3vo6sJoHOKgAc",
                 # name="Raghav – Skilled Hindi Support Specialist",
                 model="eleven_multilingual_v2",
-                api_key="sk_32eb6bc8c3c5632aeefc1b9d9de55a387452916284a5cc7c"
+                api_key=""
             ),
             "mr": lambda: deepgram.TTS(model="aura-asteria-en"),  # Fallback to English audio
             "pa": lambda: deepgram.TTS(model="aura-asteria-en"),  # Fallback to English audio
@@ -324,11 +324,11 @@ class TriageAgent(Agent):
     def _get_stt(self, language: str):
         """Return the appropriate STT factory for the language."""
         stt_factories = {
-            "en": lambda: groq.STT(model="whisper-large-v3-turbo", language="en", api_key="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"),
-            "hi": lambda: groq.STT(model="whisper-large-v3-turbo", language="hi", api_key="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"),
-            "mr": lambda: groq.STT(model="whisper-large-v3-turbo", language="mr", api_key="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"),
-            "pa": lambda: groq.STT(model="whisper-large-v3-turbo", language="pa", api_key="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"),
-            "ta": lambda: groq.STT(model="whisper-large-v3-turbo", language="ta", api_key="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"),
+            "en": lambda: groq.STT(model="whisper-large-v3-turbo", language="en", api_key=""),
+            "hi": lambda: groq.STT(model="whisper-large-v3-turbo", language="hi", api_key=""),
+            "mr": lambda: groq.STT(model="whisper-large-v3-turbo", language="mr", api_key=""),
+            "pa": lambda: groq.STT(model="whisper-large-v3-turbo", language="pa", api_key=""),
+            "ta": lambda: groq.STT(model="whisper-large-v3-turbo", language="ta", api_key=""),
         }
         return stt_factories.get(language, stt_factories["en"])()
 
