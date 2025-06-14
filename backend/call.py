@@ -142,7 +142,6 @@ def whatsapp_reply():
         media_content_type = request.form.get('MediaContentType0')
 
         logger.info(f"Incoming message from {sender_number}: {incoming_msg}, Media: {media_url}")
-
         if sender_number not in conversation_state:
             conversation_state[sender_number] = {
                 'history': [],
