@@ -58,7 +58,7 @@ graph TD
     B --> J[Node.js Service Layer]
     J --> H[Convex Database]
     J --> D[Auth Service]
-    B --> L[WebRTC (livekit) Stream]
+    B --> L[Voice Agent Stream]
 ```
 
 
